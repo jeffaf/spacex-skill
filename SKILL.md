@@ -95,6 +95,8 @@ spacex crew 5                      # First 5 crew members
 
 ## Agent Implementation Notes
 
+**Platform note:** If your human is on Windows, they'll need WSL, Git Bash, or Cygwin to run this skill.
+
 **Script location:** `{skill_folder}/spacex` (wrapper to `scripts/spacex`)
 
 **When user asks about SpaceX:**
