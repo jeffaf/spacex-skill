@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# spacex - SpaceX API CLI for launch and rocket lookups
+# Usage: spacex <command> [args]
+
+set -euo pipefail
+
+API="https://api.spacexdata.com/v4"
+
+# Rocket ID to name mapping
+declare -A ROCKETS=(
+    ["5e9d0d95eda69955f709d1eb"]="Falcon 1"
+    ["5e9d0d95eda69973a809d1ec"]="Falcon 9"
+    ["5e9d0d95eda69974db09d1ed"]="Falcon Heavy"
+    ["5e9d0d96eda699382d09d1ee"]="Starship"
+)
+
+# Launchpad ID to locality mapping
+declare -A LAUNCHPADS=(
+    ["5e9e4501f5090910d4566f83"]="Vandenberg"
+    ["5e9e4501f509094ba4566f84"]="Cape Canaveral"
+    ["5e9e4502f5090927f8566f85"]="Boca Chica"
+    ["5e9e4502f5090995de566f86"]="Kwajalein Atoll"
+    ["5e9e4502f509092b78566f87"]="Vandenberg"
+    ["5e9e4502f509094188566f88"]="Cape Canaveral"
+)
+
+usage() {
+    cat <<EOF
+Usage: spacex <command> [args]
+
+Commands:
+  launches [upcoming|past] [limit]  List launches (default: upcoming, 10)
+  launch <id>                       Get full launch details by ID
+  rockets                           List all rockets
+  rocket <id>                       Get rocket details
+  crew [limit]                      List crew members (default: 10)
+
+Examples:
+  spacex launches                   # Next 10 upcoming launches
+  spacex launches past 5            # Last 5 launches
+  spacex launch 5eb87d47ffd86e000604b38a
+  spacex rockets
+  spacex crew
+EOF
+    exit 1
+}
+
+fetch() {
+    curl -sf "$1" || { echo "API error" >&2; exit 1; }
+}
+
+get_rocket_name() {
+    local id="$1"
+    echo "${ROCKETS[$id]:-Unknown}"
+}
+
+get_launchpad_name() {
+    local id="$1"
+    echo "${LAUNCHPADS[$id]:-Unknown}"
+}
+
+format_launches() {
+    local rockets_json launchpads_json
+    rockets_json=$(printf '%s\n' "${!ROCKETS[@]}" | jq -R -s 'split("\n") | map(select(. != "")) | reduce .[] as $k ({}; . + {($k): "'"${ROCKETS[5e9d0d95eda69973a809d1ec]}"'"})')
+    
+    jq -r --argjson rockets '{"5e9d0d95eda69955f709d1eb":"Falcon 1","5e9d0d95eda69973a809d1ec":"Falcon 9","5e9d0d95eda69974db09d1ed":"Falcon Heavy","5e9d0d96eda699382d09d1ee":"Starship"}' \
+       --argjson pads '{"5e9e4501f5090910d4566f83":"Vandenberg","5e9e4501f509094ba4566f84":"Cape Canaveral","5e9e4502f5090927f8566f85":"Boca Chica","5e9e4502f5090995de566f86":"Kwajalein","5e9e4502f509092b78566f87":"Vandenberg","5e9e4502f509094188566f88":"Cape Canaveral"}' \
+       '.[] | "🚀 \(.name) — \($rockets[.rocket] // "Unknown"), \(.date_utc[:10]), \($pads[.launchpad] // "Unknown")"'
+}
+
+format_launch_full() {
+    jq -r --argjson rockets '{"5e9d0d95eda69955f709d1eb":"Falcon 1","5e9d0d95eda69973a809d1ec":"Falcon 9","5e9d0d95eda69974db09d1ed":"Falcon Heavy","5e9d0d96eda699382d09d1ee":"Starship"}' \
+       --argjson pads '{"5e9e4501f5090910d4566f83":"Vandenberg","5e9e4501f509094ba4566f84":"Cape Canaveral","5e9e4502f5090927f8566f85":"Boca Chica","5e9e4502f5090995de566f86":"Kwajalein","5e9e4502f509092b78566f87":"Vandenberg","5e9e4502f509094188566f88":"Cape Canaveral"}' \
+       '
+        "🚀 \(.name)\n" +
+        "   ID: \(.id)\n" +
+        "   Flight #: \(.flight_number)\n" +
+        "   Date: \(.date_utc[:10]) (\(.date_precision))\n" +
+        "   Rocket: \($rockets[.rocket] // "Unknown")\n" +
+        "   Launchpad: \($pads[.launchpad] // "Unknown")\n" +
+        "   Status: \(if .upcoming then "Upcoming" elif .success then "✅ Success" elif .success == false then "❌ Failed" else "Unknown" end)\n" +
+        (if .details then "\n📋 Details:\n\(.details)\n" else "" end) +
+        (if .links.webcast then "\n🎥 Webcast: \(.links.webcast)\n" else "" end) +
+        (if .links.wikipedia then "📚 Wikipedia: \(.links.wikipedia)\n" else "" end) +
+        (if .links.article then "📰 Article: \(.links.article)\n" else "" end)
+       '
+}
+
+format_rockets() {
+    jq -r '.[] | "🛸 \(.name) — \(.type), \(.first_flight), \(if .active then "Active" else "Retired" end), \(.success_rate_pct)% success"'
+}
+
+format_rocket_full() {
+    jq -r '
+        "🛸 \(.name)\n" +
+        "   ID: \(.id)\n" +
+        "   Type: \(.type)\n" +
+        "   First Flight: \(.first_flight)\n" +
+        "   Status: \(if .active then "Active" else "Retired" end)\n" +
+        "   Success Rate: \(.success_rate_pct)%\n" +
+        "   Cost per Launch: $\(.cost_per_launch | . / 1000000)M\n" +
+        "   Height: \(.height.meters)m / \(.height.feet)ft\n" +
+        "   Mass: \(.mass.kg)kg\n" +
+        "   Stages: \(.stages)\n" +
+        "\n📋 Description:\n\(.description)\n" +
+        (if .wikipedia then "\n📚 Wikipedia: \(.wikipedia)\n" else "" end)
+    '
+}
+
+format_crew() {
+    jq -r '.[] | "👨‍🚀 \(.name) — \(.agency), \(.status)"'
+}
+
+cmd_launches() {
+    local type="${1:-upcoming}"
+    local limit="${2:-10}"
+    
+    case "$type" in
+        upcoming)
+            fetch "$API/launches/upcoming" | jq ".[:$limit]" | format_launches
+            ;;
+        past)
+            fetch "$API/launches/past" | jq ".[-$limit:] | reverse" | format_launches
+            ;;
+        *)
+            echo "Unknown launch type: $type (use 'upcoming' or 'past')" >&2
+            exit 1
+            ;;
+    esac
+}
+
+cmd_launch() {
+    [[ -z "${1:-}" ]] && { echo "Usage: spacex launch <id>" >&2; exit 1; }
+    fetch "$API/launches/$1" | format_launch_full
+}
+
+cmd_rockets() {
+    fetch "$API/rockets" | format_rockets
+}
+
+cmd_rocket() {
+    [[ -z "${1:-}" ]] && { echo "Usage: spacex rocket <id>" >&2; exit 1; }
+    fetch "$API/rockets/$1" | format_rocket_full
+}
+
+cmd_crew() {
+    local limit="${1:-10}"
+    fetch "$API/crew" | jq ".[:$limit]" | format_crew
+}
+
+[[ $# -lt 1 ]] && usage
+
+case "$1" in
+    launches)  shift; cmd_launches "$@" ;;
+    launch)    shift; cmd_launch "$@" ;;
+    rockets)   shift; cmd_rockets "$@" ;;
+    rocket)    shift; cmd_rocket "$@" ;;
+    crew)      shift; cmd_crew "$@" ;;
+    -h|--help|help) usage ;;
+    *) echo "Unknown command: $1" >&2; usage ;;
+esac
