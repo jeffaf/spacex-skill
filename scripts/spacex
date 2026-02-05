@@ -46,7 +46,7 @@ EOF
 }
 
 fetch() {
-    curl -sf "$1" || { echo "API error" >&2; exit 1; }
+    curl -sf --max-time 10 "$1" || { echo "API error" >&2; exit 1; }
 }
 
 get_rocket_name() {
